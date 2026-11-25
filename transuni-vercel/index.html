@@ -1,0 +1,1784 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TransUni UCATECI • Transporte Universitario</title>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="./supabase-config.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+          },
+          colors: {
+            ucateci: {
+              navy: '#002855',
+              royal: '#004B93',
+              blue: '#0072CE',
+              sky: '#E6F1FA',
+              ice: '#F0F5FA',
+              gold: '#F59E0B',
+            }
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background-color: #F0F5FA;
+      color: #0F172A;
+    }
+    /* Custom scrollbar */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: #E2E8F0; border-radius: 999px; }
+    ::-webkit-scrollbar-thumb { background: #94A3B8; border-radius: 999px; }
+    ::-webkit-scrollbar-thumb:hover { background: #004B93; }
+
+    /* Toggle Switch */
+    .toggle-checkbox:checked {
+      right: 0;
+      border-color: #0072CE;
+    }
+    .toggle-checkbox:checked + .toggle-label {
+      background-color: #0072CE;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col antialiased selection:bg-[#0072CE] selection:text-white">
+
+  <!-- ===================================================================== -->
+  <!-- BARRA SUPERIOR DE MODO DEMO (1 CLIC ENTRE ROLES Y VISTAS)             -->
+  <!-- ===================================================================== -->
+  <div id="demoBarMount" class="sticky top-0 z-50 bg-[#001D3D] text-white border-b border-blue-800/60 shadow-md"></div>
+
+  <!-- ===================================================================== -->
+  <!-- NAVBAR PRINCIPAL INSTITUCIONAL UCATECI                                -->
+  <!-- ===================================================================== -->
+  <header id="navbarMount" class="bg-[#002855] text-white shadow-lg border-b border-[#004B93]"></header>
+
+  <!-- ===================================================================== -->
+  <!-- CONTENEDOR DE NOTIFICACIONES TOAST (SIN ALERT/CONFIRM)                -->
+  <!-- ===================================================================== -->
+  <div id="toastContainer" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none px-4 sm:px-0"></div>
+
+  <!-- ===================================================================== -->
+  <!-- CONTENIDO PRINCIPAL SPA                                               -->
+  <!-- ===================================================================== -->
+  <main id="appMount" class="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8"></main>
+
+  <!-- ===================================================================== -->
+  <!-- FOOTER INSTITUCIONAL                                                  -->
+  <!-- ===================================================================== -->
+  <footer class="bg-[#002855] text-blue-200 text-xs py-5 px-4 mt-12 border-t border-[#004B93]">
+    <div class="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 text-center sm:text-left">
+      <div class="flex items-center gap-2">
+        <span class="inline-flex items-center justify-center w-6 h-6 rounded-md bg-[#0072CE] text-white font-bold">U</span>
+        <span class="font-semibold text-white">TransUni UCATECI</span>
+        <span class="hidden sm:inline text-blue-300">• Universidad Católica del Cibao (La Vega)</span>
+      </div>
+      <div>Sistema de Gestión y Reserva de Transporte Estudiantil • Sincronización en tiempo real</div>
+    </div>
+  </footer>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL GLOBAL REUTILIZABLE                                             -->
+  <!-- ===================================================================== -->
+  <div id="modalBackdrop" class="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs hidden items-center justify-center p-4">
+    <div id="modalBox" class="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-lg w-full overflow-hidden transform transition-all"></div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- LÓGICA COMPLETA DE LA APLICACIÓN (STORE + ROUTER + VISTAS)            -->
+  <!-- ===================================================================== -->
+  <script>
+    (function () {
+      'use strict';
+
+      const STORAGE_KEY = 'transuni_ucateci_bonao_v5_realtime';
+      const BACKEND_READY = !!(window.supabase && window.TRANSUNI_SUPABASE_URL && window.TRANSUNI_SUPABASE_ANON_KEY && !String(window.TRANSUNI_SUPABASE_URL).includes('TU_PROJECT_URL') && !String(window.TRANSUNI_SUPABASE_ANON_KEY).includes('TU_SUPABASE')); 
+      const supabaseClient = BACKEND_READY ? window.supabase.createClient(window.TRANSUNI_SUPABASE_URL, window.TRANSUNI_SUPABASE_ANON_KEY, {
+        auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+      }) : null;
+      let realtimeChannel = null;
+      let saveTimer = null;
+      let lastRemotePayload = '';
+      let profilesCache = [];
+
+      // Obtener fecha base + offset de días simulados (para probar el ciclo diario de las 10:00 PM)
+      function getSimulatedNow(dayOffset = 0) {
+        const d = new Date();
+        d.setDate(d.getDate() + dayOffset);
+        return d;
+      }
+
+      // Fecha del viaje de "mañana" (siempre +1 día respecto a la noche de encuesta)
+      function getTomorrowDateObj(dayOffset = 0) {
+        const d = getSimulatedNow(dayOffset);
+        d.setDate(d.getDate() + 1);
+        return d;
+      }
+
+      function formatISODate(d) {
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd}`;
+      }
+
+      // Formato estilo encuesta: "JUEVES 26/11/2026"
+      function formatPollHeaderDate(dayOffset = 0) {
+        const t = getTomorrowDateObj(dayOffset);
+        const dias = ['DOMINGO', 'LUNES', 'MARTES', 'MIÉRCOLES', 'JUEVES', 'VIERNES', 'SÁBADO'];
+        const diaNombre = dias[t.getDay()];
+        const dd = String(t.getDate()).padStart(2, '0');
+        const mm = String(t.getMonth() + 1).padStart(2, '0');
+        const yyyy = t.getFullYear();
+        return `${diaNombre} ${dd}/${mm}/${yyyy}`;
+      }
+
+      // =====================================================================
+      // DATOS INICIALES REALISTAS (BONAO → UCATECI LA VEGA)
+      // =====================================================================
+      function createSeedData() {
+        const targetISO = formatISODate(getTomorrowDateObj(0));
+
+        const horarios = [
+          { id: 'bon-1', horaSalida: '06:00 AM', horaClases: '07:00 AM', chofer: 'Dilone', tanda: 'manana', capacidad: 100, activo: true },
+          { id: 'bon-2', horaSalida: '06:50 AM', horaClases: '08:00 AM', chofer: 'Jorge', tanda: 'manana', capacidad: 100, activo: true },
+          { id: 'bon-3', horaSalida: '07:50 AM', horaClases: '09:00 AM', chofer: 'Dilone', tanda: 'manana', capacidad: 100, activo: true },
+          { id: 'bon-4', horaSalida: '08:50 AM', horaClases: '10:00 AM', chofer: 'Jorge', tanda: 'manana', capacidad: 100, activo: true },
+          { id: 'bon-5', horaSalida: '10:50 AM', horaClases: '12:00 PM', chofer: 'Dilone', tanda: 'manana', capacidad: 100, activo: true },
+          { id: 'bon-6', horaSalida: '12:50 PM', horaClases: '02:00 PM', chofer: 'Jorge', tanda: 'tarde', capacidad: 100, activo: true },
+          { id: 'bon-7', horaSalida: '02:50 PM', horaClases: '04:00 PM', chofer: 'Dilone', tanda: 'tarde', capacidad: 100, activo: true },
+          { id: 'bon-8', horaSalida: '03:50 PM', horaClases: '05:00 PM', chofer: 'Jorge', tanda: 'tarde', capacidad: 100, activo: true },
+          { id: 'bon-9', horaSalida: '04:50 PM', horaClases: '06:00 PM', chofer: 'Dilone', tanda: 'tarde', capacidad: 100, activo: true },
+          { id: 'bon-10', horaSalida: '05:55 PM', horaClases: '07:00 PM', chofer: 'Jorge', tanda: 'tarde', capacidad: 100, activo: true },
+          { id: 'bon-11', horaSalida: '06:55 PM', horaClases: '08:00 PM', chofer: 'Dilone', tanda: 'tarde', capacidad: 100, activo: true },
+        ];
+
+        const usuarios = [];
+
+        // Entorno de pruebas limpio: no se precargan votos ni pasajeros.
+        const reservas = [];
+
+        return {
+          config: {
+            nombreComunidad: 'TransUni UCATECI',
+            subtitulo: 'Ruta Bonao → Campus UCATECI (La Vega)',
+            origen: 'Bonao (Monseñor Nouel)',
+            destino: 'Campus UCATECI (La Vega)',
+            capacidadTope: 100,
+            horaEnvioEncuesta: '10:00 PM',
+            encuestaActivaDemo: true, // Permite simular antes/después de las 10:00 PM
+            dayOffset: 0,
+            permitirListaEspera: false,
+          },
+          puntosEspera: [
+            { id: 'stop-1', etiqueta: 'Semáforo de las Delicias', corto: 'Semáforo de las Delicias', desc: 'Punto de abordaje en Bonao' },
+            { id: 'stop-2', etiqueta: 'Parquesito', corto: 'Parquesito', desc: 'Punto de abordaje en Bonao' },
+            { id: 'stop-3', etiqueta: 'J Peinado', corto: 'J Peinado', desc: 'Punto de abordaje en Bonao' },
+            { id: 'stop-4', etiqueta: 'Helados Bon', corto: 'Helados Bon', desc: 'Punto de abordaje en Bonao' },
+            { id: 'stop-5', etiqueta: 'Esquina del Sándwich', corto: 'Esquina del Sándwich', desc: 'Punto de abordaje en Bonao' },
+            { id: 'stop-6', etiqueta: 'Gobernación, Correo', corto: 'Gobernación / Correo', desc: 'Punto de abordaje en Bonao' },
+            { id: 'stop-7', etiqueta: 'Hospital Viejo', corto: 'Hospital Viejo', desc: 'Punto de abordaje en Bonao' },
+            { id: 'stop-8', etiqueta: 'Duarte, Helados Bon el 90', corto: 'Duarte (Helados Bon el 90)', desc: 'Punto de abordaje en Bonao' },
+            { id: 'stop-9', etiqueta: 'Monumento, Aniana Vargas', corto: 'Monumento / Aniana Vargas', desc: 'Punto de abordaje en Bonao' },
+            { id: 'stop-10', etiqueta: 'Avenida Libertad', corto: 'Av. Libertad', desc: 'Punto de abordaje en Bonao' },
+            { id: 'stop-11', etiqueta: 'Típico, salida ya hacia La Vega', corto: 'Típico (salida hacia La Vega)', desc: 'Última parada antes de salir hacia La Vega' },
+          ],
+          usuarios,
+          choferes: [
+            { id: 'driver-1', nombre: 'Dilone', telefono: '809-555-0201', nota: 'Ruta Bonao → UCATECI' },
+            { id: 'driver-2', nombre: 'Jorge', telefono: '809-555-0202', nota: 'Ruta Bonao → UCATECI' },
+          ],
+          horarios,
+          reservas,
+          avisos: [
+            {
+              id: 'av-1',
+              titulo: 'Encuesta diaria automática a las 10:00 PM',
+              contenido: 'Todos los días a las 10:00 PM se abre esta encuesta para confirmar los pasajeros de mañana desde Bonao hacia UCATECI (tope 100 por horario).',
+              fecha: 'Hoy • 10:00 PM',
+            },
+            {
+              id: 'av-2',
+              titulo: 'Orden de abordaje y reporte para choferes Dilone y Jorge',
+              contenido: 'El primer estudiante en votar queda al final de la lista (#1 abajo). Los choferes consultan el total exacto antes de salir.',
+              fecha: 'Información Oficial',
+            }
+          ],
+          currentUserId: null,
+          currentView: 'login',
+          retorno: { fecha: formatISODate(new Date()), votos: [], forzar: {} },
+        };
+      }
+
+      // =====================================================================
+      // STORE PERSISTENTE EN LOCALSTORAGE
+      // =====================================================================
+      let state = loadState();
+
+      function loadState() {
+        // Solo caché visual temporal. La fuente oficial de datos es Supabase.
+        try { return createSeedData(); } catch (e) { return createSeedData(); }
+      }
+
+      function persistedSnapshot() {
+        const copy = JSON.parse(JSON.stringify(state));
+        delete copy.currentUserId;
+        delete copy.currentView;
+        copy.usuarios = []; // Los perfiles viven en la tabla protegida profiles.
+        return copy;
+      }
+
+      function saveState() {
+        if (!supabaseClient || !getCurrentUser()) return;
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(async () => {
+          const payload = persistedSnapshot();
+          try {
+            const { error } = await supabaseClient.from('transuni_app_state').update({ payload, updated_at: new Date().toISOString() }).eq('id', 1);
+            if (error) {
+              console.error('Error sincronizando TransUni:', error);
+              showToast(error.message || 'No se pudo sincronizar. Se actualizarán los datos para evitar sobrescribir cambios de otra persona.', 'error');
+              try { await loadRemoteState(); renderApp(); } catch (refreshError) { console.error(refreshError); }
+            } else {
+              lastRemotePayload = JSON.stringify(payload);
+            }
+          } catch (err) {
+            console.error(err);
+            showToast('Error de conexión con la base de datos.', 'error');
+          }
+        }, 180);
+      }
+
+      async function loadRemoteState() {
+        const { data, error } = await supabaseClient.from('transuni_app_state').select('payload').eq('id', 1).single();
+        if (error) throw error;
+        if (data && data.payload && Object.keys(data.payload).length) {
+          const localUser = state.currentUserId;
+          const localView = state.currentView;
+          state = { ...createSeedData(), ...data.payload, currentUserId: localUser, currentView: localView, usuarios: profilesCache };
+        }
+        lastRemotePayload = JSON.stringify(persistedSnapshot());
+      }
+
+      async function loadProfiles() {
+        const { data, error } = await supabaseClient.from('profiles').select('id,nombre,matricula,universidad,telefono,rol,activo').order('nombre');
+        if (error) throw error;
+        profilesCache = (data || []).map(p => ({ ...p, email: `${p.matricula}@transuni.app` }));
+        state.usuarios = profilesCache;
+      }
+
+      async function syncFromRealtime(payload) {
+        if (!payload || !Object.keys(payload).length) return;
+        const incoming = JSON.stringify(payload);
+        if (incoming === lastRemotePayload) return;
+        const localUser = state.currentUserId;
+        const localView = state.currentView;
+        state = { ...createSeedData(), ...payload, currentUserId: localUser, currentView: localView, usuarios: profilesCache };
+        lastRemotePayload = incoming;
+        renderApp();
+      }
+
+      async function initializeBackend() {
+        if (!BACKEND_READY) { renderApp(); return; }
+        try {
+          const { data: { session } } = await supabaseClient.auth.getSession();
+          await loadProfiles();
+          await loadRemoteState();
+          if (session) {
+            const profile = profilesCache.find(p => p.id === session.user.id);
+            if (profile) {
+              state.currentUserId = profile.id;
+              state.currentView = profile.rol === 'admin' ? 'admin' : profile.rol === 'chofer' ? 'choferes' : 'bonao_manana';
+            }
+          }
+          realtimeChannel = supabaseClient.channel('transuni-live')
+            .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'transuni_app_state', filter: 'id=eq.1' }, ({ new: row }) => syncFromRealtime(row.payload))
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, async () => { await loadProfiles(); renderApp(); })
+            .subscribe();
+          renderApp();
+        } catch (err) {
+          console.error('No se pudo iniciar TransUni:', err);
+          renderApp();
+          showToast('No se pudo conectar con Supabase. Verifica las tablas y las claves.', 'error');
+        }
+      }
+
+      function resetDemo() {
+        const keepUser = state.currentUserId;
+        state = createSeedData();
+        state.reservas = [];
+        state.retorno = { fecha: formatISODate(new Date()), votos: [], forzar: {} };
+        state.currentUserId = keepUser;
+        state.currentView = 'bonao_manana';
+        saveState();
+        uiState.expandedScheduleId = 'bon-1';
+        showToast('Pruebas reiniciadas: no hay votos ni pasajeros registrados.', 'info');
+        renderApp();
+      }
+
+      const uiState = {
+        tandaFilter: 'all', // 'all' | 'manana' | 'tarde'
+        choferFilter: 'all', // 'all' | 'Dilone' | 'Jorge'
+        expandedScheduleId: 'bon-1',
+        publicSearch: '',
+        publicChoferFilter: 'all',
+        adminTab: 'horarios', // 'horarios' | 'encuesta' | 'usuarios' | 'reportes'
+        authTab: 'login',
+      };
+
+      // =====================================================================
+      // HELPERS DE CONSULTA
+      // =====================================================================
+      function getCurrentUser() {
+        if (!state.currentUserId) return null;
+        return state.usuarios.find((u) => u.id === state.currentUserId) || null;
+      }
+
+      function getUserById(id) {
+        return state.usuarios.find((u) => u.id === id) || null;
+      }
+
+      function getScheduleById(id) {
+        return state.horarios.find((h) => h.id === id) || null;
+      }
+
+      function getStopById(id) {
+        return state.puntosEspera.find((p) => p.id === id) || state.puntosEspera[0];
+      }
+
+      function getActiveTomorrowISO() {
+        return formatISODate(getTomorrowDateObj(state.config.dayOffset || 0));
+      }
+
+      // Devuelve reservas de un horario ordenadas cronológicamente (orderNum 1, 2, 3...)
+      function getVotesForSchedule(scheduleId) {
+        const targetISO = getActiveTomorrowISO();
+        return state.reservas
+          .filter((r) => r.horarioId === scheduleId && r.fechaViaje === targetISO)
+          .sort((a, b) => a.orderNum - b.orderNum);
+      }
+
+      // Devuelve el voto actual del estudiante para mañana (1 voto por encuesta, como en WhatsApp)
+      function getUserTomorrowVote(userId) {
+        const targetISO = getActiveTomorrowISO();
+        return state.reservas.find((r) => r.usuarioId === userId && r.fechaViaje === targetISO) || null;
+      }
+
+      function escapeHtml(str) {
+        if (str === null || str === undefined) return '';
+        return String(str)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+      }
+
+      // =====================================================================
+      // TOAST Y MODAL
+      // =====================================================================
+      function showToast(message, type = 'success') {
+        const container = document.getElementById('toastContainer');
+        const colors = {
+          success: 'bg-[#002855] border-[#0072CE] text-white',
+          info: 'bg-[#004B93] border-sky-300 text-white',
+          warning: 'bg-amber-600 border-amber-300 text-white',
+          danger: 'bg-rose-700 border-rose-300 text-white',
+        };
+        const toast = document.createElement('div');
+        toast.className = `pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-xl border shadow-xl text-sm font-medium transition-all duration-300 ${colors[type] || colors.info}`;
+        toast.innerHTML = `<span class="flex-1">${escapeHtml(message)}</span>`;
+        container.appendChild(toast);
+        setTimeout(() => {
+          toast.style.opacity = '0';
+          setTimeout(() => toast.remove(), 250);
+        }, 3500);
+      }
+
+      function openModal(htmlContent) {
+        const backdrop = document.getElementById('modalBackdrop');
+        const box = document.getElementById('modalBox');
+        box.innerHTML = htmlContent;
+        backdrop.classList.remove('hidden');
+        backdrop.classList.add('flex');
+      }
+
+      function closeModal() {
+        const backdrop = document.getElementById('modalBackdrop');
+        backdrop.classList.add('hidden');
+        backdrop.classList.remove('flex');
+      }
+
+      document.getElementById('modalBackdrop').addEventListener('click', (e) => {
+        if (e.target.id === 'modalBackdrop') closeModal();
+      });
+
+      function navigateTo(view, userIdToSwitch = null) {
+        if (userIdToSwitch) {
+          state.currentUserId = userIdToSwitch;
+        }
+        state.currentView = view;
+        saveState();
+        renderApp();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+
+      // =====================================================================
+      // BARRA DEMO SUPERIOR + NAVBAR INSTITUCIONAL UCATECI
+      // =====================================================================
+      function renderDemoBar() {
+        const mount = document.getElementById('demoBarMount');
+        const me = getCurrentUser();
+        if (!me) { mount.innerHTML = ''; return; }
+        const isAdm = me.rol === 'admin';
+        const currentView = state.currentView;
+        const buttons = [
+          { id: 'bonao_manana', label: 'Bonao → La Vega (10:00 PM)', icon: '🚌' },
+          { id: 'retorno', label: 'La Vega → Bonao (8:00 AM / 1:45 PM)', icon: '🏫' },
+          { id: 'mi_reserva', label: 'Mi Voto / Reserva', icon: '🎫' },
+          { id: 'lista', label: 'Conteo Choferes / Lista Pública', icon: '📊' },
+          { id: 'choferes', label: 'Apartado de Choferes', icon: '🚌', staff: true },
+          { id: 'admin', label: 'Admin', icon: '⚙️', admin: true },
+        ].filter((x) => (!x.admin || isAdm) && (!x.staff || ['admin','chofer'].includes(me.rol)));
+
+        mount.innerHTML = `
+          <div class="max-w-6xl mx-auto px-3 sm:px-6 py-2 flex flex-wrap items-center justify-between gap-2">
+            <div class="flex items-center gap-2">
+              <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider bg-amber-400 text-[#002855]">
+                ${isAdm ? '⚙️ Modo Admin' : me.rol === 'chofer' ? '🚌 Modo Chofer' : '🚌 Menú'}
+              </span>
+              <span class="hidden lg:inline text-xs text-blue-200">Encuesta diaria 10:00 PM • Tope 100</span>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-1 sm:gap-1.5">
+              ${buttons.map((b) => {
+                const isActive = currentView === b.id;
+                return `
+                  <button
+                    type="button"
+                    data-demo-view="${b.id}"
+                    data-demo-user=""
+                    class="px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                      isActive
+                        ? 'bg-[#0072CE] text-white shadow-sm ring-1 ring-sky-300'
+                        : 'bg-white/10 text-blue-100 hover:bg-white/20'
+                    }"
+                  >
+                    <span class="mr-1">${b.icon}</span>${b.label}
+                  </button>
+                `;
+              }).join('')}
+
+
+            </div>
+          </div>
+        `;
+
+        mount.querySelectorAll('[data-demo-view]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const v = btn.getAttribute('data-demo-view');
+            const u = btn.getAttribute('data-demo-user');
+            navigateTo(v, u || null);
+          });
+        });
+
+      }
+
+      function renderNavbar() {
+        const mount = document.getElementById('navbarMount');
+        const user = getCurrentUser();
+
+        mount.innerHTML = `
+          <div class="max-w-6xl mx-auto px-4 sm:px-6 py-3.5 flex flex-wrap items-center justify-between gap-3">
+            <div class="flex items-center gap-3 cursor-pointer" id="navBrandHome">
+              <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-[#0072CE] to-[#004B93] border border-sky-300/40 flex items-center justify-center shadow-md">
+                <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M8 17h8M8 17a2 2 0 11-4 0m4 0a2 2 0 10-4 0m12 0a2 2 0 11-4 0m4 0a2 2 0 10-4 0M4 11h16M5 17H4a1 1 0 01-1-1V7a3 3 0 013-3h12a3 3 0 013 3v9a1 1 0 01-1 1h-1M9 4v7m6-7v7" />
+                </svg>
+              </div>
+              <div>
+                <div class="flex items-center gap-2">
+                  <span class="font-extrabold text-lg tracking-tight text-white">${escapeHtml(state.config.nombreComunidad)}</span>
+                  <span class="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded bg-white/15 text-sky-200">Bonao → La Vega</span>
+                </div>
+                <p class="text-xs text-blue-200">${escapeHtml(state.config.subtitulo)}</p>
+              </div>
+            </div>
+
+            <div class="flex items-center gap-2 sm:gap-3">
+              ${user ? `
+                <div class="text-right hidden sm:block">
+                  <div class="text-sm font-semibold text-white leading-tight">${escapeHtml(user.nombre)}</div>
+                  <div class="text-xs text-blue-200">Matrícula: <span class="font-mono font-semibold text-white">${escapeHtml(user.matricula)}</span></div>
+                </div>
+                <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold border ${
+                  user.rol === 'admin'
+                    ? 'bg-amber-400/20 text-amber-200 border-amber-400/40'
+                    : 'bg-sky-400/20 text-sky-200 border-sky-400/40'
+                }">
+                  ${user.rol === 'admin' ? 'Administrador' : user.rol === 'chofer' ? 'Chofer' : 'Estudiante'}
+                </span>
+                <button type="button" id="btnNavLogout" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-white/10 hover:bg-white/20 text-white border border-white/15 transition cursor-pointer">
+                  Salir
+                </button>
+              ` : `
+                <button type="button" id="btnNavLogin" class="px-4 py-2 rounded-xl text-xs font-bold bg-[#0072CE] hover:bg-sky-500 text-white shadow transition cursor-pointer">
+                  Iniciar Sesión
+                </button>
+              `}
+            </div>
+          </div>
+        `;
+
+        document.getElementById('navBrandHome').addEventListener('click', () => navigateTo('bonao_manana'));
+        const btnLogout = document.getElementById('btnNavLogout');
+        if (btnLogout) {
+          btnLogout.addEventListener('click', async () => {
+            if (supabaseClient) await supabaseClient.auth.signOut();
+            state.currentUserId = null;
+            state.currentView = 'login';
+            renderApp();
+          });
+        }
+        const btnLogin = document.getElementById('btnNavLogin');
+        if (btnLogin) {
+          btnLogin.addEventListener('click', () => navigateTo('login'));
+        }
+      }
+
+      // =====================================================================
+      // VISTA PRINCIPAL: "DÍA DE MAÑANA: BONAO HACIA LA VEGA"
+      // =====================================================================
+      function renderBonaoMananaView() {
+        const mount = document.getElementById('appMount');
+        const user = getCurrentUser() || getUserById('u-1');
+        const pollDateHeader = formatPollHeaderDate(state.config.dayOffset || 0);
+        const myVote = getUserTomorrowVote(user.id);
+        const isSurveyOpen = state.config.encuestaActivaDemo;
+
+        // Totales por chofer (Dilone y Jorge) para que lo vean en tiempo real
+        const diloneSchedules = state.horarios.filter((h) => h.activo && h.chofer === 'Dilone');
+        const jorgeSchedules = state.horarios.filter((h) => h.activo && h.chofer === 'Jorge');
+        const totalDilone = diloneSchedules.reduce((sum, h) => sum + getVotesForSchedule(h.id).length, 0);
+        const totalJorge = jorgeSchedules.reduce((sum, h) => sum + getVotesForSchedule(h.id).length, 0);
+
+        // Filtrar horarios visibles
+        let visibleSchedules = state.horarios.filter((h) => h.activo);
+        if (uiState.tandaFilter !== 'all') {
+          visibleSchedules = visibleSchedules.filter((h) => h.tanda === uiState.tandaFilter);
+        }
+        if (uiState.choferFilter !== 'all') {
+          visibleSchedules = visibleSchedules.filter((h) => h.chofer === uiState.choferFilter);
+        }
+
+        mount.innerHTML = `
+          <div class="space-y-6">
+            <!-- Encabezado Principal del Apartado -->
+            <div class="bg-gradient-to-r from-[#002855] via-[#004B93] to-[#0072CE] rounded-3xl p-6 sm:p-7 text-white shadow-xl border border-sky-400/30">
+              <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                <div>
+                  <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-extrabold uppercase tracking-wider bg-white/15 text-sky-200 border border-white/20 mb-2">
+                    🕙 Envío Automático Diario: 10:00 PM • Tope 100 cupos
+                  </div>
+                  <h1 class="text-2xl sm:text-3xl font-extrabold tracking-tight">
+                    Día de mañana: Bonao hacia La Vega
+                  </h1>
+                  <p class="text-sm sm:text-base font-bold text-amber-300 mt-1.5 tracking-wide">
+                    FAVOR INDICAR HORARIOS DE CLASES PARA MAÑANA ${escapeHtml(pollDateHeader)}
+                  </p>
+                </div>
+
+                <!-- Controles Demo del ciclo diario de las 10:00 PM -->
+                <div class="${user.rol === 'admin' ? '' : 'hidden '}bg-[#001D3D]/80 backdrop-blur-xs p-3.5 rounded-2xl border border-sky-300/25 flex flex-col gap-2 shrink-0">
+                  <div class="flex items-center justify-between gap-3 text-xs">
+                    <span class="font-bold text-blue-200">Estado 10:00 PM:</span>
+                    <span class="px-2.5 py-0.5 rounded-full font-extrabold ${isSurveyOpen ? 'bg-emerald-400/20 text-emerald-300' : 'bg-amber-400/20 text-amber-300'}">
+                      ${isSurveyOpen ? '● Abierta (Post 10:00 PM)' : '⏳ Esperando 10:00 PM'}
+                    </span>
+                  </div>
+                  <div class="flex flex-wrap gap-1.5">
+                    <button type="button" id="btnToggle10PM" class="px-3 py-1.5 rounded-xl bg-[#0072CE] hover:bg-sky-500 text-white text-xs font-bold transition cursor-pointer">
+                      ${isSurveyOpen ? 'Simular antes de 10:00 PM' : '⚡ Simular 10:00 PM (Abrir)'}
+                    </button>
+                    <button type="button" id="btnAdvanceNextDay" class="px-3 py-1.5 rounded-xl bg-white/15 hover:bg-white/25 text-white text-xs font-bold transition cursor-pointer">
+                      📅 Avanzar +1 Día
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Resumen en Tiempo Real para los Choferes (Dilone y Jorge) -->
+            <section class="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 flex items-center justify-between">
+                <div>
+                  <div class="text-xs font-extrabold uppercase tracking-wider text-slate-500">Chofer Dilone (Mañana)</div>
+                  <div class="text-2xl font-extrabold text-[#002855] mt-0.5">${totalDilone} <span class="text-xs font-semibold text-slate-500">pasajeros totales</span></div>
+                  <div class="text-[11px] text-[#0072CE] font-semibold mt-0.5">${diloneSchedules.length} salidas asignadas</div>
+                </div>
+                <div class="w-12 h-12 rounded-2xl bg-[#E6F1FA] text-[#002855] font-extrabold flex items-center justify-center text-lg">🚌</div>
+              </div>
+
+              <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 flex items-center justify-between">
+                <div>
+                  <div class="text-xs font-extrabold uppercase tracking-wider text-slate-500">Chofer Jorge (Mañana)</div>
+                  <div class="text-2xl font-extrabold text-[#002855] mt-0.5">${totalJorge} <span class="text-xs font-semibold text-slate-500">pasajeros totales</span></div>
+                  <div class="text-[11px] text-[#0072CE] font-semibold mt-0.5">${jorgeSchedules.length} salidas asignadas</div>
+                </div>
+                <div class="w-12 h-12 rounded-2xl bg-[#E6F1FA] text-[#004B93] font-extrabold flex items-center justify-center text-lg">🚌</div>
+              </div>
+
+              <div class="bg-white rounded-2xl p-4 shadow-sm border border-blue-200 flex flex-col justify-center">
+                ${myVote ? (() => {
+                  const s = getScheduleById(myVote.horarioId);
+                  return `
+                    <div class="text-xs font-extrabold uppercase text-emerald-700">✓ Tu Voto Registrado</div>
+                    <div class="text-sm font-extrabold text-[#002855] mt-0.5">${s ? `${s.horaSalida} (Clases ${s.horaClases})` : ''}</div>
+                    <div class="flex items-center justify-between mt-1.5">
+                      <span class="text-xs text-slate-500">Posición #${myVote.orderNum} (Chofer ${s ? s.chofer : ''})</span>
+                      <button type="button" id="btnCancelMyVoteTop" class="text-xs font-bold text-rose-600 hover:underline cursor-pointer">Quitar voto</button>
+                    </div>
+                  `;
+                })() : `
+                  <div class="text-xs font-extrabold uppercase text-amber-700">⚠ Aún no has votado</div>
+                  <div class="text-xs text-slate-600 mt-1">Selecciona tu horario de salida desde Bonao abajo (1 opción).</div>
+                `}
+              </div>
+            </section>
+
+            ${!isSurveyOpen ? `
+              <div class="bg-white rounded-2xl p-8 text-center border-2 border-amber-300 shadow-sm">
+                <div class="text-3xl mb-2">🕙</div>
+                <h2 class="text-lg font-extrabold text-[#002855]">La encuesta de mañana se enviará hoy a las 10:00 PM</h2>
+                <p class="text-xs text-slate-600 max-w-md mx-auto mt-1">
+                  En este momento estás simulando la vista previa antes de las 10:00 PM. Haz clic en <strong>"⚡ Simular 10:00 PM (Abrir)"</strong> arriba para habilitar la votación en vivo.
+                </p>
+              </div>
+            ` : `
+              <!-- Filtros rápidos -->
+              <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 flex flex-wrap items-center justify-between gap-3">
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <span class="text-xs font-bold text-slate-500 mr-1">Tanda:</span>
+                  ${[
+                    { id: 'all', label: 'Todos los horarios (11)' },
+                    { id: 'manana', label: '☀️ Mañana' },
+                    { id: 'tarde', label: '🌅 Tarde' },
+                  ].map((t) => `
+                    <button type="button" data-filter-tanda="${t.id}" class="px-3 py-1.5 rounded-xl text-xs font-bold cursor-pointer ${uiState.tandaFilter === t.id ? 'bg-[#002855] text-white' : 'bg-[#F0F5FA] text-slate-600 hover:bg-[#E6F1FA]'}">${t.label}</button>
+                  `).join('')}
+                </div>
+
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <span class="text-xs font-bold text-slate-500 mr-1">Chofer:</span>
+                  ${[
+                    { id: 'all', label: 'Todos' },
+                    { id: 'Dilone', label: 'Viajará Dilone' },
+                    { id: 'Jorge', label: 'Viajará Jorge' },
+                  ].map((c) => `
+                    <button type="button" data-filter-chofer="${c.id}" class="px-3 py-1.5 rounded-xl text-xs font-bold cursor-pointer ${uiState.choferFilter === c.id ? 'bg-[#0072CE] text-white' : 'bg-[#F0F5FA] text-slate-600 hover:bg-[#E6F1FA]'}">${c.label}</button>
+                  `).join('')}
+                </div>
+              </div>
+
+              <!-- Lista de Encuesta Estilo WhatsApp / UCATECI (Selecciona una opción) -->
+              <section class="bg-white rounded-3xl shadow-md border border-slate-200 overflow-hidden">
+                <div class="px-6 py-4 bg-[#002855] text-white flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div class="text-xs font-bold text-sky-300 uppercase tracking-wider">Selecciona una opción • Bonao → Campus UCATECI</div>
+                    <h2 class="text-base sm:text-lg font-extrabold">Horarios Disponibles para Mañana ${escapeHtml(pollDateHeader)}</h2>
+                  </div>
+                  <span class="text-xs text-blue-200">Toca un horario para votar • Despliega para ver el orden (1ro abajo)</span>
+                </div>
+
+                <div class="divide-y divide-slate-200">
+                  ${visibleSchedules.map((sch) => {
+                    const votesAsc = getVotesForSchedule(sch.id); // 1, 2, 3...
+                    const count = votesAsc.length;
+                    const isFull = count >= sch.capacidad;
+                    const isMyChoice = myVote && myVote.horarioId === sch.id;
+                    const isExpanded = uiState.expandedScheduleId === sch.id;
+                    const pct = Math.min(100, Math.round((count / sch.capacidad) * 100));
+
+                    // Orden inverso para mostrar: el primero que vota (#1) queda ABAJO del todo, el más reciente ARRIBA
+                    const votesNewestFirst = [...votesAsc].reverse();
+
+                    return `
+                      <div class="transition-colors ${isMyChoice ? 'bg-[#E6F1FA]/70' : 'hover:bg-slate-50/70'}">
+                        <div class="p-4 sm:p-5">
+                          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                            <!-- Radio botón + Texto exacto del horario -->
+                            <div class="flex items-start gap-3.5 cursor-pointer flex-1" data-vote-schedule="${sch.id}">
+                              <div class="mt-0.5 w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0 transition ${
+                                isMyChoice
+                                  ? 'border-[#0072CE] bg-[#0072CE] text-white shadow-xs'
+                                  : isFull
+                                    ? 'border-slate-300 bg-slate-100'
+                                    : 'border-[#004B93] bg-white hover:border-[#0072CE]'
+                              }">
+                                ${isMyChoice ? '<span class="w-2.5 h-2.5 rounded-full bg-white"></span>' : ''}
+                              </div>
+
+                              <div class="flex-1">
+                                <div class="text-sm sm:text-base font-extrabold text-[#002855] leading-snug">
+                                  ${escapeHtml(sch.horaSalida)} Clases De Las ${escapeHtml(sch.horaClases)}
+                                  <span class="text-[#0072CE]">(Viajará ${escapeHtml(sch.chofer)})</span>
+                                </div>
+                                <div class="flex flex-wrap items-center gap-2 mt-1 text-xs">
+                                  ${isMyChoice ? '<span class="px-2 py-0.5 rounded-md bg-[#0072CE] text-white font-bold">✓ Tu selección</span>' : ''}
+                                  ${isFull
+                                    ? '<span class="px-2 py-0.5 rounded-md bg-rose-100 text-rose-700 font-bold">Cupo Lleno (100/100)</span>'
+                                    : `<span class="text-slate-500 font-medium">${sch.capacidad - count} cupos libres de ${sch.capacidad}</span>`
+                                  }
+                                </div>
+                              </div>
+                            </div>
+
+                            <!-- Contador a la derecha + botón ver lista ordenada -->
+                            <div class="flex items-center justify-between sm:justify-end gap-3 pl-9 sm:pl-0">
+                              <div class="text-right">
+                                <span class="text-lg font-extrabold ${count > 0 ? 'text-[#002855]' : 'text-slate-400'}">${count}</span>
+                                <span class="text-xs font-bold text-slate-400">/ ${sch.capacidad}</span>
+                              </div>
+
+                              <button
+                                type="button"
+                                data-toggle-expand="${sch.id}"
+                                class="px-3 py-1.5 rounded-xl text-xs font-bold border transition cursor-pointer ${
+                                  isExpanded
+                                    ? 'bg-[#002855] text-white border-[#002855]'
+                                    : 'bg-white text-[#004B93] border-blue-200 hover:bg-[#E6F1FA]'
+                                }"
+                              >
+                                ${isExpanded ? 'Ocultar lista ▲' : `Ver orden (${count}) ▼`}
+                              </button>
+                            </div>
+                          </div>
+
+                          <!-- Barra de progreso estilo encuesta -->
+                          <div class="mt-3 pl-9">
+                            <div class="w-full h-2.5 bg-slate-200/80 rounded-full overflow-hidden">
+                              <div
+                                class="h-full rounded-full transition-all duration-300 ${isFull ? 'bg-rose-600' : 'bg-[#0072CE]'}"
+                                style="width: ${pct}%"
+                              ></div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <!-- Desplegable con Orden Cronológico Inverso (El #1 primero que votó queda ABAJO) -->
+                        ${isExpanded ? `
+                          <div class="mx-4 sm:mx-6 mb-5 p-4 rounded-2xl bg-[#F0F5FA] border border-blue-200">
+                            <div class="flex flex-wrap items-center justify-between gap-2 mb-3 pb-2 border-b border-blue-200/80">
+                              <span class="text-xs font-extrabold text-[#002855]">
+                                📋 Orden de Votación — ${escapeHtml(sch.horaSalida)} (Viajará ${escapeHtml(sch.chofer)})
+                              </span>
+                              <span class="text-[11px] font-bold text-[#004B93]">
+                                ↓ El primero que vota queda debajo (#1 abajo)
+                              </span>
+                            </div>
+
+                            ${votesNewestFirst.length === 0 ? `
+                              <p class="text-xs text-slate-500 text-center py-3">Aún nadie ha votado en este horario. ¡Sé el #1!</p>
+                            ` : `
+                              <div class="max-h-64 overflow-y-auto space-y-1.5 pr-1">
+                                ${votesNewestFirst.map((v) => {
+                                  const stop = getStopById(v.puntoEsperaId);
+                                  const isFirst = v.orderNum === 1;
+                                  const isMe = v.usuarioId === user.id;
+                                  return `
+                                    <div class="px-3 py-2 rounded-xl text-xs flex items-center justify-between gap-2 border ${
+                                      isMe
+                                        ? 'bg-[#002855] text-white border-[#002855] font-bold'
+                                        : isFirst
+                                          ? 'bg-amber-50 border-amber-300 text-slate-900 font-bold'
+                                          : 'bg-white border-slate-200 text-slate-700'
+                                    }">
+                                      <div class="flex items-center gap-2 truncate">
+                                        <span class="px-2 py-0.5 rounded font-mono text-[11px] font-extrabold ${
+                                          isMe ? 'bg-[#0072CE] text-white' : isFirst ? 'bg-amber-400 text-[#002855]' : 'bg-slate-100 text-[#004B93]'
+                                        }">#${v.orderNum}</span>
+                                        <span class="truncate">${escapeHtml(v.nombrePasajero)}</span>
+                                        <span class="font-mono text-[11px] opacity-75">(${escapeHtml(v.matriculaPasajero)})</span>
+                                        ${isFirst ? '<span class="px-1.5 py-0.5 rounded bg-amber-200 text-amber-950 text-[10px] font-extrabold">1ro en votar</span>' : ''}
+                                      </div>
+                                      <div class="text-[11px] shrink-0 opacity-85">
+                                        📍 ${escapeHtml(stop.corto)} • ${escapeHtml(v.horaVoto)}
+                                      </div>
+                                    </div>
+                                  `;
+                                }).join('')}
+                              </div>
+                            `}
+                          </div>
+                        ` : ''}
+                      </div>
+                    `;
+                  }).join('')}
+                </div>
+              </section>
+            `}
+          </div>
+        `;
+
+        // Eventos de control 10:00 PM y avance de día
+        document.getElementById('btnToggle10PM').addEventListener('click', () => {
+          state.config.encuestaActivaDemo = !state.config.encuestaActivaDemo;
+          saveState();
+          showToast(
+            state.config.encuestaActivaDemo
+              ? '¡Son las 10:00 PM! Encuesta enviada y abierta para los viajes de mañana.'
+              : 'Vista cambiada a antes de las 10:00 PM.',
+            'info'
+          );
+          renderBonaoMananaView();
+        });
+
+        document.getElementById('btnAdvanceNextDay').addEventListener('click', () => {
+          state.config.dayOffset = (state.config.dayOffset || 0) + 1;
+          state.config.encuestaActivaDemo = true;
+          saveState();
+          showToast(`Nuevo ciclo diario (10:00 PM): Encuesta lista para ${formatPollHeaderDate(state.config.dayOffset)}.`, 'success');
+          renderBonaoMananaView();
+        });
+
+        const btnCancelTop = document.getElementById('btnCancelMyVoteTop');
+        if (btnCancelTop) {
+          btnCancelTop.addEventListener('click', () => {
+            removeUserTomorrowVote(user.id);
+            showToast('Tu voto fue retirado y el cupo quedó libre.', 'info');
+            renderBonaoMananaView();
+          });
+        }
+
+        // Filtros
+        document.querySelectorAll('[data-filter-tanda]').forEach((b) => {
+          b.addEventListener('click', () => {
+            uiState.tandaFilter = b.getAttribute('data-filter-tanda');
+            renderBonaoMananaView();
+          });
+        });
+
+        document.querySelectorAll('[data-filter-chofer]').forEach((b) => {
+          b.addEventListener('click', () => {
+            uiState.choferFilter = b.getAttribute('data-filter-chofer');
+            renderBonaoMananaView();
+          });
+        });
+
+        // Expandir / colapsar orden de votación
+        document.querySelectorAll('[data-toggle-expand]').forEach((btn) => {
+          btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const id = btn.getAttribute('data-toggle-expand');
+            uiState.expandedScheduleId = uiState.expandedScheduleId === id ? null : id;
+            renderBonaoMananaView();
+          });
+        });
+
+        // Votar en un horario (abre modal rápido para confirmar punto de espera en Bonao)
+        document.querySelectorAll('[data-vote-schedule]').forEach((row) => {
+          row.addEventListener('click', () => {
+            const schId = row.getAttribute('data-vote-schedule');
+            const sch = getScheduleById(schId);
+            if (!sch) return;
+
+            const currentVotes = getVotesForSchedule(schId);
+            const alreadyInThis = myVote && myVote.horarioId === schId;
+
+            if (!alreadyInThis && currentVotes.length >= sch.capacidad) {
+              showToast(`El horario ${sch.horaSalida} ya alcanzó su tope máximo de ${sch.capacidad} pasajeros.`, 'danger');
+              return;
+            }
+
+            openModal(`
+              <div class="bg-[#002855] text-white px-5 py-4 flex items-center justify-between">
+                <div>
+                  <div class="text-[11px] font-bold text-sky-300 uppercase">Confirmar Voto • Bonao → UCATECI</div>
+                  <h3 class="font-extrabold text-base">${escapeHtml(sch.horaSalida)} Clases ${escapeHtml(sch.horaClases)} (Viajará ${escapeHtml(sch.chofer)})</h3>
+                </div>
+                <button type="button" id="closeVoteModal" class="text-blue-200 hover:text-white font-bold text-lg cursor-pointer">✕</button>
+              </div>
+              <div class="p-5 space-y-3">
+                <p class="text-xs text-slate-600">
+                  Elige dónde abordarás en Bonao. Tu voto se colocará encima de los anteriores (el #1 primero queda abajo):
+                </p>
+                <div class="space-y-2 max-h-[50vh] overflow-y-auto pr-1">
+                  ${state.puntosEspera.map((stop) => `
+                    <button type="button" data-confirm-stop="${stop.id}" class="w-full p-3.5 rounded-xl border-2 border-slate-200 hover:border-[#0072CE] hover:bg-[#E6F1FA]/70 text-left flex items-center gap-3 transition cursor-pointer">
+                      <span class="w-8 h-8 rounded-lg bg-[#0072CE]/15 text-[#0072CE] flex items-center justify-center font-bold shrink-0">📍</span>
+                      <div>
+                        <div class="font-extrabold text-sm text-[#002855]">${escapeHtml(stop.etiqueta)}</div>
+                        <div class="text-xs text-slate-500">${escapeHtml(stop.desc)}</div>
+                      </div>
+                    </button>
+                  `).join('')}
+                </div>
+                <button type="button" id="cancelVoteModal" class="w-full py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs cursor-pointer">Cancelar</button>
+              </div>
+            `);
+
+            document.getElementById('closeVoteModal').addEventListener('click', closeModal);
+            document.getElementById('cancelVoteModal').addEventListener('click', closeModal);
+            document.querySelectorAll('[data-confirm-stop]').forEach((stopBtn) => {
+              stopBtn.addEventListener('click', () => {
+                const stopId = stopBtn.getAttribute('data-confirm-stop');
+                castStudentVote(user, schId, stopId);
+                uiState.expandedScheduleId = schId;
+                closeModal();
+                showToast(`¡Voto confirmado! Salida ${sch.horaSalida} con chofer ${sch.chofer}.`, 'success');
+                renderBonaoMananaView();
+              });
+            });
+          });
+        });
+      }
+
+      // Registrar voto (1 opción activa por encuesta; si cambia, reordena los números sin huecos)
+      function castStudentVote(user, scheduleId, puntoEsperaId) {
+        removeUserTomorrowVote(user.id);
+        const existingVotes = getVotesForSchedule(scheduleId);
+        const nextOrder = existingVotes.length + 1;
+        const nowTime = new Date().toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' });
+
+        state.reservas.push({
+          id: 'res-' + Date.now(),
+          usuarioId: user.id,
+          nombrePasajero: user.nombre,
+          matriculaPasajero: user.matricula,
+          horarioId: scheduleId,
+          fechaViaje: getActiveTomorrowISO(),
+          puntoEsperaId,
+          orderNum: nextOrder,
+          horaVoto: nowTime,
+        });
+        saveState();
+      }
+
+      function removeUserTomorrowVote(userId) {
+        const targetISO = getActiveTomorrowISO();
+        const prev = state.reservas.find((r) => r.usuarioId === userId && r.fechaViaje === targetISO);
+        if (!prev) return;
+        state.reservas = state.reservas.filter((r) => r.id !== prev.id);
+        // Re-enumerar orden consecutivo 1..N del horario afectado
+        const remaining = getVotesForSchedule(prev.horarioId);
+        remaining.forEach((r, idx) => {
+          r.orderNum = idx + 1;
+        });
+        saveState();
+      }
+
+      // =====================================================================
+      // VISTA 2: MI RESERVA (ESTUDIANTE SIN QR)
+      // =====================================================================
+      function renderMiReservaView() {
+        const mount = document.getElementById('appMount');
+        const user = getCurrentUser() || getUserById('u-1');
+        const myVote = getUserTomorrowVote(user.id);
+        const pollDateHeader = formatPollHeaderDate(state.config.dayOffset || 0);
+
+        mount.innerHTML = `
+          <div class="max-w-3xl mx-auto space-y-6">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h1 class="text-2xl font-extrabold text-[#002855]">Mi Reserva • Bonao hacia La Vega</h1>
+                <p class="text-xs text-slate-600 mt-0.5">Viaje programado para mañana ${escapeHtml(pollDateHeader)}</p>
+              </div>
+              <button type="button" id="btnBackToPoll" class="px-4 py-2.5 rounded-xl bg-[#0072CE] hover:bg-[#004B93] text-white font-bold text-xs shadow cursor-pointer">
+                ← Volver a la Encuesta
+              </button>
+            </div>
+
+            ${myVote ? (() => {
+              const sch = getScheduleById(myVote.horarioId);
+              const stop = getStopById(myVote.puntoEsperaId);
+              const totalInBus = sch ? getVotesForSchedule(sch.id).length : 0;
+              return `
+                <div class="bg-white rounded-3xl shadow-lg border-2 border-[#0072CE]/30 overflow-hidden">
+                  <div class="bg-gradient-to-r from-[#002855] to-[#004B93] p-6 text-white">
+                    <div class="flex items-center justify-between">
+                      <span class="px-3 py-1 rounded-full text-xs font-extrabold bg-emerald-400/20 text-emerald-200 border border-emerald-300/30">
+                        ✓ Voto Confirmado en Lista
+                      </span>
+                      <span class="font-mono text-xs text-sky-200">Posición #${myVote.orderNum} de ${totalInBus}</span>
+                    </div>
+                    <h2 class="text-2xl font-extrabold mt-3">${escapeHtml(user.nombre)}</h2>
+                    <p class="text-xs text-blue-200 mt-0.5">Matrícula: <strong class="text-white font-mono">${escapeHtml(user.matricula)}</strong> • ${escapeHtml(user.universidad)}</p>
+                  </div>
+
+                  <div class="p-6 space-y-4">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div class="p-4 rounded-2xl bg-[#F0F5FA] border border-blue-100">
+                        <div class="text-xs font-bold text-slate-500">Horario de Salida (Bonao)</div>
+                        <div class="text-xl font-extrabold text-[#002855] mt-1">${sch ? escapeHtml(sch.horaSalida) : ''}</div>
+                        <div class="text-xs text-[#0072CE] font-semibold">Clases de las ${sch ? escapeHtml(sch.horaClases) : ''}</div>
+                      </div>
+                      <div class="p-4 rounded-2xl bg-[#F0F5FA] border border-blue-100">
+                        <div class="text-xs font-bold text-slate-500">Chofer Asignado</div>
+                        <div class="text-xl font-extrabold text-[#002855] mt-1">Viajará ${sch ? escapeHtml(sch.chofer) : ''}</div>
+                        <div class="text-xs text-slate-600">Unidad Ruta Bonao → UCATECI</div>
+                      </div>
+                    </div>
+
+                    <div class="p-4 rounded-2xl bg-[#F0F5FA] border border-blue-100 flex items-center justify-between">
+                      <div>
+                        <div class="text-xs font-bold text-slate-500">Punto de Abordaje</div>
+                        <div class="text-sm font-extrabold text-[#002855] mt-0.5">📍 ${escapeHtml(stop.etiqueta)}</div>
+                      </div>
+                      <span class="text-xs font-bold text-slate-500">Votado: ${escapeHtml(myVote.horaVoto)}</span>
+                    </div>
+
+                    <div class="pt-3 border-t border-slate-200 flex flex-wrap gap-3">
+                      <button type="button" id="btnChangeMySchedule" class="px-4 py-2.5 rounded-xl bg-[#0072CE] hover:bg-[#004B93] text-white font-bold text-xs cursor-pointer">
+                        ✏️ Cambiar Horario
+                      </button>
+                      <button type="button" id="btnReleaseMyVote" class="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs cursor-pointer">
+                        🏃 Liberar mi cupo ("Me fui antes / No viajaré")
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              `;
+            })() : `
+              <div class="bg-white rounded-3xl p-8 text-center border border-slate-200 shadow-sm">
+                <div class="text-3xl mb-2">🚌</div>
+                <h2 class="text-lg font-extrabold text-[#002855]">No tienes ningún horario reservado para mañana</h2>
+                <p class="text-xs text-slate-500 mt-1 mb-4">Entra a la encuesta "Día de mañana: Bonao hacia La Vega" y elige tu hora de salida.</p>
+                <button type="button" id="btnGoVoteNow" class="px-5 py-2.5 rounded-xl bg-[#0072CE] text-white font-bold text-xs cursor-pointer">
+                  Ir a Votar Ahora
+                </button>
+              </div>
+            `}
+          </div>
+        `;
+
+        document.getElementById('btnBackToPoll').addEventListener('click', () => navigateTo('bonao_manana'));
+        const btnGoVote = document.getElementById('btnGoVoteNow');
+        if (btnGoVote) btnGoVote.addEventListener('click', () => navigateTo('bonao_manana'));
+
+        const btnChange = document.getElementById('btnChangeMySchedule');
+        if (btnChange) btnChange.addEventListener('click', () => navigateTo('bonao_manana'));
+
+        const btnRelease = document.getElementById('btnReleaseMyVote');
+        if (btnRelease) {
+          btnRelease.addEventListener('click', () => {
+            removeUserTomorrowVote(user.id);
+            showToast('Tu cupo ha sido liberado. Los lugares se reordenaron automáticamente.', 'info');
+            renderMiReservaView();
+          });
+        }
+      }
+
+      // =====================================================================
+      // VISTA 3: LISTA PÚBLICA Y CONTEO EN TIEMPO REAL PARA CHOFERES (DILONE / JORGE)
+      // =====================================================================
+      function renderListaPublicaView() {
+        const mount = document.getElementById('appMount');
+        const pollDateHeader = formatPollHeaderDate(state.config.dayOffset || 0);
+        const q = uiState.publicSearch.toLowerCase();
+
+        const filteredSchedules = state.horarios.filter((h) => {
+          if (!h.activo) return false;
+          if (uiState.publicChoferFilter !== 'all' && h.chofer !== uiState.publicChoferFilter) return false;
+          if (q) {
+            const votes = getVotesForSchedule(h.id);
+            return votes.some(
+              (v) => v.nombrePasajero.toLowerCase().includes(q) || v.matriculaPasajero.toLowerCase().includes(q)
+            );
+          }
+          return true;
+        });
+
+        mount.innerHTML = `
+          <div class="space-y-6">
+            <div>
+              <h1 class="text-2xl sm:text-3xl font-extrabold text-[#002855] tracking-tight">
+                Conteo en Tiempo Real para Choferes y Estudiantes
+              </h1>
+              <p class="text-sm text-slate-600 mt-1">
+                Viajes de mañana <strong>${escapeHtml(pollDateHeader)}</strong> • Bonao → Campus UCATECI (Tope 100 por horario • El 1ro en votar queda debajo).
+              </p>
+            </div>
+
+            <!-- Filtros -->
+            <section class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
+              <div>
+                <label class="block text-xs font-bold text-slate-600 mb-1" for="pubSearch">Buscar estudiante por nombre o matrícula</label>
+                <input type="search" id="pubSearch" value="${escapeHtml(uiState.publicSearch)}" placeholder="Ej: Sofía, Diego o 20260101..." class="w-full px-3.5 py-2 rounded-xl border border-slate-300 text-sm" />
+              </div>
+              <div>
+                <div class="text-xs font-bold text-slate-600 mb-1">Filtrar por Chofer</div>
+                <div class="flex gap-2">
+                  ${[
+                    { id: 'all', label: 'Todos los viajes' },
+                    { id: 'Dilone', label: '🚌 Chofer Dilone' },
+                    { id: 'Jorge', label: '🚌 Chofer Jorge' },
+                  ].map((c) => `
+                    <button type="button" data-pub-chofer="${c.id}" class="flex-1 py-2 rounded-xl text-xs font-bold cursor-pointer ${uiState.publicChoferFilter === c.id ? 'bg-[#002855] text-white' : 'bg-[#F0F5FA] text-slate-700'}">${c.label}</button>
+                  `).join('')}
+                </div>
+              </div>
+            </section>
+
+            <!-- Tarjetas por horario -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+              ${filteredSchedules.map((sch) => {
+                const votesAsc = getVotesForSchedule(sch.id);
+                const votesNewestFirst = [...votesAsc].reverse(); // #1 abajo
+                const count = votesAsc.length;
+                const pct = Math.min(100, Math.round((count / sch.capacidad) * 100));
+
+                return `
+                  <article class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
+                    <div class="px-5 py-3.5 bg-gradient-to-r from-[#002855] to-[#004B93] text-white flex items-center justify-between gap-2">
+                      <div>
+                        <div class="font-extrabold text-sm">${escapeHtml(sch.horaSalida)} → Clases ${escapeHtml(sch.horaClases)}</div>
+                        <div class="text-xs text-sky-200">Viajará <strong>${escapeHtml(sch.chofer)}</strong></div>
+                      </div>
+                      <div class="px-3 py-1 rounded-xl bg-[#0072CE] font-extrabold text-sm">
+                        ${count} / ${sch.capacidad}
+                      </div>
+                    </div>
+
+                    <div class="w-full h-1.5 bg-slate-100">
+                      <div class="h-full ${count >= sch.capacidad ? 'bg-rose-600' : 'bg-[#0072CE]'}" style="width: ${pct}%"></div>
+                    </div>
+
+                    <div class="p-4 flex-1">
+                      <div class="flex items-center justify-between text-[11px] font-bold text-slate-500 mb-2">
+                        <span>Pasajeros anotados (${count})</span>
+                        <span>↓ #1 (Primero) abajo</span>
+                      </div>
+
+                      ${votesNewestFirst.length === 0 ? `
+                        <p class="text-xs text-slate-400 italic py-4 text-center">0 pasajeros registrados aún.</p>
+                      ` : `
+                        <div class="max-h-52 overflow-y-auto space-y-1 pr-1">
+                          ${votesNewestFirst.map((v) => {
+                            const highlight = q && (v.nombrePasajero.toLowerCase().includes(q) || v.matriculaPasajero.toLowerCase().includes(q));
+                            return `
+                              <div class="px-2.5 py-1.5 rounded-lg text-xs flex items-center justify-between border ${
+                                highlight
+                                  ? 'bg-amber-100 border-amber-400 font-extrabold text-amber-950'
+                                  : v.orderNum === 1
+                                    ? 'bg-[#E6F1FA] border-blue-200 font-bold text-[#002855]'
+                                    : 'bg-slate-50 border-slate-100 text-slate-700'
+                              }">
+                                <span class="truncate"><strong class="text-[#0072CE]">#${v.orderNum}</strong> ${escapeHtml(v.nombrePasajero)}</span>
+                                <span class="font-mono text-[10px] text-slate-400 shrink-0 ml-2">${escapeHtml(v.matriculaPasajero)}</span>
+                              </div>
+                            `;
+                          }).join('')}
+                        </div>
+                      `}
+                    </div>
+                  </article>
+                `;
+              }).join('')}
+            </div>
+          </div>
+        `;
+
+        document.getElementById('pubSearch').addEventListener('input', (e) => {
+          uiState.publicSearch = e.target.value;
+          renderListaPublicaView();
+          const inp = document.getElementById('pubSearch');
+          inp.focus();
+          inp.setSelectionRange(inp.value.length, inp.value.length);
+        });
+
+        document.querySelectorAll('[data-pub-chofer]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            uiState.publicChoferFilter = btn.getAttribute('data-pub-chofer');
+            renderListaPublicaView();
+          });
+        });
+      }
+
+      // =====================================================================
+      // VISTA 4: ADMINISTRADOR (HORARIOS, CHOFERES, REGLA 10:00 PM Y CSV)
+      // =====================================================================
+      function renderAdminView() {
+        const mount = document.getElementById('appMount');
+        const targetISO = getActiveTomorrowISO();
+        const tomorrowVotes = state.reservas.filter((r) => r.fechaViaje === targetISO);
+        const totalCap = state.horarios.filter((h) => h.activo).reduce((s, h) => s + Number(h.capacidad), 0);
+
+        mount.innerHTML = `
+          <div class="space-y-6">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h1 class="text-2xl font-extrabold text-[#002855]">Administración • Ruta Bonao → UCATECI</h1>
+                <p class="text-xs text-slate-600 mt-0.5">Gestiona los horarios diarios de las 10:00 PM, asigna choferes (Dilone / Jorge) y descarga reportes.</p>
+              </div>
+              <button type="button" id="btnExportCsvAdmin" class="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow cursor-pointer">
+                📥 Exportar Lista Mañana (CSV)
+              </button>
+            </div>
+
+            <!-- KPIs -->
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
+              <div class="bg-white p-4 rounded-2xl border border-slate-200">
+                <div class="text-xs font-bold text-slate-500">Votos para Mañana</div>
+                <div class="text-2xl font-extrabold text-[#002855] mt-1">${tomorrowVotes.length}</div>
+              </div>
+              <div class="bg-white p-4 rounded-2xl border border-slate-200">
+                <div class="text-xs font-bold text-slate-500">Capacidad Tope/Bus</div>
+                <div class="text-2xl font-extrabold text-[#0072CE] mt-1">100</div>
+              </div>
+              <div class="bg-white p-4 rounded-2xl border border-slate-200">
+                <div class="text-xs font-bold text-slate-500">Envío Automático</div>
+                <div class="text-2xl font-extrabold text-amber-600 mt-1">10:00 PM</div>
+              </div>
+              <div class="bg-white p-4 rounded-2xl border border-slate-200">
+                <div class="text-xs font-bold text-slate-500">Salidas Activas</div>
+                <div class="text-2xl font-extrabold text-emerald-600 mt-1">${state.horarios.filter((h) => h.activo).length}</div>
+              </div>
+            </div>
+
+            <!-- Tabla de Horarios y Choferes -->
+            <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+              <div class="px-5 py-4 bg-[#002855] text-white flex items-center justify-between">
+                <h2 class="font-extrabold text-sm">Horarios "Día de mañana: Bonao hacia La Vega"</h2>
+                <span class="text-xs text-sky-200">Capacidad total flota: ${totalCap}</span>
+              </div>
+              <div class="overflow-x-auto">
+                <table class="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr class="bg-[#F0F5FA] font-extrabold uppercase text-slate-600 border-b border-slate-200">
+                      <th class="py-3 px-4">Salida Bonao</th>
+                      <th class="py-3 px-4">Clases UCATECI</th>
+                      <th class="py-3 px-4">Chofer</th>
+                      <th class="py-3 px-4">Tope Cupos</th>
+                      <th class="py-3 px-4">Anotados Mañana</th>
+                      <th class="py-3 px-4">Estado</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-slate-100">
+                    ${state.horarios.map((h) => {
+                      const count = getVotesForSchedule(h.id).length;
+                      return `
+                        <tr class="hover:bg-slate-50">
+                          <td class="py-3 px-4 font-extrabold text-[#002855]">${escapeHtml(h.horaSalida)}</td>
+                          <td class="py-3 px-4 font-semibold text-slate-700">${escapeHtml(h.horaClases)}</td>
+                          <td class="py-3 px-4">
+                            <select data-adm-chofer="${h.id}" class="px-2.5 py-1 rounded-lg border border-slate-300 bg-white font-bold text-[#004B93]">
+                              <option value="Dilone" ${h.chofer === 'Dilone' ? 'selected' : ''}>Dilone</option>
+                              <option value="Jorge" ${h.chofer === 'Jorge' ? 'selected' : ''}>Jorge</option>
+                            </select>
+                          </td>
+                          <td class="py-3 px-4">
+                            <input type="number" data-adm-cap="${h.id}" value="${h.capacidad}" min="1" max="150" class="w-16 px-2 py-1 rounded border border-slate-300 font-bold text-center" />
+                          </td>
+                          <td class="py-3 px-4 font-extrabold text-[#0072CE]">${count} / ${h.capacidad}</td>
+                          <td class="py-3 px-4">
+                            <button type="button" data-adm-toggle="${h.id}" class="px-2.5 py-1 rounded-full font-bold cursor-pointer ${h.activo ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'}">
+                              ${h.activo ? 'Activo' : 'Pausado'}
+                            </button>
+                          </td>
+                        </tr>
+                      `;
+                    }).join('')}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        `;
+
+        document.querySelectorAll('[data-adm-chofer]').forEach((sel) => {
+          sel.addEventListener('change', () => {
+            const h = getScheduleById(sel.getAttribute('data-adm-chofer'));
+            if (h) {
+              h.chofer = sel.value;
+              saveState();
+              showToast(`Chofer actualizado a ${h.chofer} para las ${h.horaSalida}.`, 'success');
+            }
+          });
+        });
+
+        document.querySelectorAll('[data-adm-cap]').forEach((inp) => {
+          inp.addEventListener('change', () => {
+            const h = getScheduleById(inp.getAttribute('data-adm-cap'));
+            if (h) {
+              h.capacidad = Math.max(1, Number(inp.value) || 100);
+              saveState();
+              showToast(`Tope actualizado a ${h.capacidad} cupos.`, 'info');
+              renderAdminView();
+            }
+          });
+        });
+
+        document.querySelectorAll('[data-adm-toggle]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const h = getScheduleById(btn.getAttribute('data-adm-toggle'));
+            if (h) {
+              h.activo = !h.activo;
+              saveState();
+              renderAdminView();
+            }
+          });
+        });
+
+        document.getElementById('btnExportCsvAdmin').addEventListener('click', () => {
+          const rows = [['Fecha Viaje', 'Salida Bonao', 'Clases UCATECI', 'Chofer', 'Orden Voto (1=Primero abajo)', 'Pasajero', 'Matricula', 'Parada', 'Hora Voto']];
+          state.horarios.forEach((h) => {
+            const votes = getVotesForSchedule(h.id);
+            votes.forEach((v) => {
+              const p = getStopById(v.puntoEsperaId);
+              rows.push([v.fechaViaje, h.horaSalida, h.horaClases, h.chofer, v.orderNum, v.nombrePasajero, v.matriculaPasajero, p.corto, v.horaVoto]);
+            });
+          });
+          const csv = 'data:text/csv;charset=utf-8,' + rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+          const link = document.createElement('a');
+          link.setAttribute('href', encodeURI(csv));
+          link.setAttribute('download', `Bonao_UCATECI_${getActiveTomorrowISO()}.csv`);
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          showToast('Reporte CSV descargado correctamente.', 'success');
+        });
+      }
+
+      // =====================================================================
+      // APARTADO DE CHOFERES: gestión de personal y programación de salidas
+      // =====================================================================
+      function renderChoferesView() {
+        const mount = document.getElementById('appMount');
+        if (!Array.isArray(state.choferes)) state.choferes = [];
+        const current = getCurrentUser();
+        const isAdmin = current && current.rol === 'admin';
+        const drivers = state.choferes;
+        const driverOptions = drivers.map(d => `<option value="${escapeHtml(d.nombre)}">${escapeHtml(d.nombre)}</option>`).join('');
+        mount.innerHTML = `
+          <div class="space-y-6">
+            <section class="rounded-3xl p-6 sm:p-8 text-white shadow-xl bg-gradient-to-r from-[#002855] via-[#004B93] to-[#0072CE]">
+              <div class="flex flex-wrap justify-between items-start gap-4">
+                <div><span class="text-xs font-bold uppercase tracking-widest text-sky-200">Panel operativo</span>
+                  <h1 class="text-2xl sm:text-3xl font-extrabold mt-1">Apartado de Choferes</h1>
+                  <p class="text-sm text-blue-100 mt-2 max-w-2xl">Administra quién conduce cada salida, los horarios y los datos del personal. Los cambios se guardan en este dispositivo.</p>
+                </div>
+                <div class="rounded-2xl bg-white/10 border border-white/20 p-4 min-w-36"><div class="text-xs text-sky-100">Choferes activos</div><div class="text-3xl font-extrabold">${drivers.length}</div></div>
+              </div>
+            </section>
+
+            <section class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <div class="lg:col-span-2 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                <div class="px-5 py-4 bg-[#002855] text-white flex flex-wrap items-center justify-between gap-2">
+                  <div><h2 class="font-extrabold">Programación de salidas</h2><p class="text-xs text-blue-200">Edita el chofer y los horarios de cada viaje</p></div>
+                  <span class="text-xs bg-white/10 px-3 py-1 rounded-full">${state.horarios.length} salidas configuradas</span>
+                </div>
+                <div class="p-4 space-y-3">
+                  ${state.horarios.map(h => `
+                    <form data-driver-schedule="${h.id}" class="rounded-xl border border-slate-200 p-4 grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
+                      <div><label class="block text-[11px] font-bold text-slate-500 mb-1">Salida desde Bonao</label><input name="horaSalida" value="${escapeHtml(h.horaSalida)}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold" required /></div>
+                      <div><label class="block text-[11px] font-bold text-slate-500 mb-1">Hora de clases</label><input name="horaClases" value="${escapeHtml(h.horaClases)}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" required /></div>
+                      <div><label class="block text-[11px] font-bold text-slate-500 mb-1">Chofer asignado</label><select name="chofer" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">${driverOptions}</select></div>
+                      <div><button class="w-full rounded-lg bg-[#0072CE] hover:bg-[#004B93] text-white px-3 py-2 text-sm font-bold">Guardar cambios</button></div>
+                      <div class="sm:col-span-4 flex items-center justify-between text-xs text-slate-500">
+                        <span>${h.tanda === 'manana' ? '☀️ Tanda de mañana' : '🌇 Tanda de tarde'} · Capacidad ${h.capacidad}</span>
+                        <span class="${h.activo ? 'text-emerald-700' : 'text-slate-400'} font-bold">${h.activo ? '● Salida activa' : '○ Salida pausada'}</span>
+                      </div>
+                    </form>`).join('')}
+                </div>
+              </div>
+
+              <div class="space-y-4">
+                <section class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                  <div class="px-5 py-4 bg-[#004B93] text-white"><h2 class="font-extrabold">Equipo de choferes</h2><p class="text-xs text-blue-100">Edita los nombres y teléfonos de contacto</p></div>
+                  <div class="p-4 space-y-3">
+                    ${drivers.map(d => `<form data-edit-driver="${d.id}" class="p-3 rounded-xl bg-[#F0F5FA] space-y-2">
+                      <input name="nombre" value="${escapeHtml(d.nombre)}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-bold" placeholder="Nombre del chofer" required />
+                      <input name="telefono" value="${escapeHtml(d.telefono || '')}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="Teléfono" />
+                      <div class="flex gap-2"><button class="flex-1 rounded-lg bg-[#0072CE] text-white py-2 text-xs font-bold">Guardar</button><button type="button" data-delete-driver="${d.id}" class="rounded-lg bg-rose-100 text-rose-700 px-3 py-2 text-xs font-bold">Eliminar</button></div>
+                    </form>`).join('')}
+                    ${drivers.length === 0 ? '<p class="text-sm text-slate-500">Todavía no hay choferes registrados.</p>' : ''}
+                  </div>
+                </section>
+                <section class="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+                  <h2 class="font-extrabold text-[#002855]">Agregar chofer</h2>
+                  <form id="addDriverForm" class="space-y-2 mt-3">
+                    <input name="nombre" placeholder="Nombre completo" required class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+                    <input name="telefono" placeholder="Teléfono (opcional)" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+                    <button class="w-full rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white py-2.5 text-sm font-bold">＋ Añadir al equipo</button>
+                  </form>
+                </section>
+                <div class="rounded-xl bg-amber-50 border border-amber-200 p-3 text-xs text-amber-900"><strong>Importante:</strong> esta es una previsualización de pruebas. Los cambios se guardan localmente en el navegador, no se sincronizan entre dispositivos.</div>
+              </div>
+            </section>
+          </div>`;
+
+        document.querySelectorAll('[data-driver-schedule]').forEach(form => {
+          const h = getScheduleById(form.getAttribute('data-driver-schedule'));
+          const select = form.elements.chofer;
+          if (h && !drivers.some(d => d.nombre === h.chofer)) {
+            const opt = document.createElement('option'); opt.value = h.chofer; opt.textContent = h.chofer; select.appendChild(opt);
+          }
+          if (h) select.value = h.chofer;
+          form.addEventListener('submit', e => {
+            e.preventDefault();
+            const data = new FormData(form);
+            const schedule = getScheduleById(form.getAttribute('data-driver-schedule'));
+            if (!schedule) return;
+            schedule.horaSalida = String(data.get('horaSalida')).trim();
+            schedule.horaClases = String(data.get('horaClases')).trim();
+            schedule.chofer = String(data.get('chofer')).trim();
+            saveState(); showToast('Horario y chofer actualizados.', 'success'); renderChoferesView();
+          });
+        });
+        document.querySelectorAll('[data-edit-driver]').forEach(form => form.addEventListener('submit', e => {
+          e.preventDefault();
+          const d = drivers.find(x => x.id === form.getAttribute('data-edit-driver'));
+          if (!d) return;
+          const data = new FormData(form), oldName = d.nombre;
+          d.nombre = String(data.get('nombre')).trim(); d.telefono = String(data.get('telefono')).trim();
+          state.horarios.forEach(h => { if (h.chofer === oldName) h.chofer = d.nombre; });
+          const account = state.usuarios.find(u => u.rol === 'chofer' && u.nombre === oldName);
+          if (account) account.nombre = d.nombre;
+          saveState(); showToast('Datos del chofer actualizados.', 'success'); renderChoferesView();
+        }));
+        document.querySelectorAll('[data-delete-driver]').forEach(btn => btn.addEventListener('click', () => {
+          const d = drivers.find(x => x.id === btn.getAttribute('data-delete-driver'));
+          if (!d) return;
+          if (state.horarios.some(h => h.chofer === d.nombre)) { showToast('Reasigna primero las salidas de este chofer.', 'warning'); return; }
+          state.choferes = drivers.filter(x => x.id !== d.id);
+          saveState(); renderChoferesView();
+        }));
+        document.getElementById('addDriverForm').addEventListener('submit', e => {
+          e.preventDefault(); const data = new FormData(e.currentTarget), nombre = String(data.get('nombre')).trim();
+          if (drivers.some(d => d.nombre.toLowerCase() === nombre.toLowerCase())) { showToast('Ese chofer ya existe.', 'warning'); return; }
+          drivers.push({ id: 'driver-' + Date.now(), nombre, telefono: String(data.get('telefono')).trim(), nota: 'Ruta Bonao → UCATECI' });
+          saveState(); showToast('Chofer agregado al equipo.', 'success'); renderChoferesView();
+        });
+      }
+
+      // =====================================================================
+      // VISTA 5: LOGIN / REGISTRO ESTUDIANTIL
+      // =====================================================================
+      function renderLoginView() {
+        const mount = document.getElementById('appMount');
+        const isRegister = uiState.authTab === 'register';
+
+        mount.innerHTML = `
+          <div class="max-w-md mx-auto">
+            <div class="bg-white rounded-3xl shadow-xl border border-slate-200 overflow-hidden">
+              <div class="bg-gradient-to-r from-[#002855] via-[#004B93] to-[#0072CE] px-6 py-6 text-center text-white">
+                <h1 class="text-xl font-extrabold">${escapeHtml(state.config.nombreComunidad)}</h1>
+                <p class="text-xs text-blue-100 mt-1">Ruta Bonao → Campus UCATECI (La Vega)</p>
+              </div>
+
+              <div class="p-6">
+                <div class="grid grid-cols-2 gap-1.5 p-1 bg-[#F0F5FA] rounded-xl mb-5 border border-slate-200">
+                  <button type="button" id="tabBtnLogin" class="py-2 rounded-lg text-xs font-bold cursor-pointer ${!isRegister ? 'bg-[#002855] text-white' : 'text-slate-600'}">Iniciar Sesión</button>
+                  <button type="button" id="tabBtnRegister" class="py-2 rounded-lg text-xs font-bold cursor-pointer ${isRegister ? 'bg-[#002855] text-white' : 'text-slate-600'}">Registrarme</button>
+                </div>
+
+                <div id="authErrBox" class="hidden mb-3 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold"></div>
+                ${!BACKEND_READY ? `<div class="mb-3 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-xs">Falta configurar Supabase. Completa <b>supabase-config.js</b> antes de registrar o iniciar sesión.</div>` : ``}
+
+                ${!isRegister ? `
+                  <form id="loginForm" class="space-y-3.5">
+                    <div>
+                      <label class="block text-xs font-bold text-slate-600 mb-1">Matrícula o Usuario</label>
+                      <input type="text" id="loginId" autocomplete="username" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm" required />
+                    </div>
+                    <div>
+                      <label class="block text-xs font-bold text-slate-600 mb-1">Contraseña</label>
+                      <input type="password" id="loginPass" autocomplete="current-password" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm" required />
+                    </div>
+                    <button type="submit" class="w-full py-3 rounded-xl bg-[#0072CE] hover:bg-[#004B93] text-white font-bold text-sm shadow cursor-pointer">
+                      Entrar
+                    </button>
+                  </form>
+                ` : `
+                  <form id="registerForm" class="space-y-3">
+                    <div>
+                      <label class="block text-xs font-bold text-slate-600 mb-1">Nombre completo</label>
+                      <input type="text" id="regNombre" placeholder="Ej: María Pérez" class="w-full px-3.5 py-2 rounded-xl border border-slate-300 text-sm" required />
+                    </div>
+                    <div class="grid grid-cols-2 gap-2.5">
+                      <div>
+                        <label class="block text-xs font-bold text-slate-600 mb-1">Matrícula</label>
+                        <input type="text" id="regMat" placeholder="20260199" class="w-full px-3.5 py-2 rounded-xl border border-slate-300 text-sm" required />
+                      </div>
+                      <div>
+                        <label class="block text-xs font-bold text-slate-600 mb-1">Contraseña</label>
+                        <input type="password" id="regPass" minlength="8" autocomplete="new-password" placeholder="Mínimo 8 caracteres" class="w-full px-3.5 py-2 rounded-xl border border-slate-300 text-sm" required />
+                      </div>
+                    </div>
+                    <button type="submit" class="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm shadow cursor-pointer">
+                      Crear Cuenta y Votar
+                    </button>
+                  </form>
+                `}
+
+                <p class="mt-5 pt-4 border-t border-slate-200 text-[11px] text-slate-500 text-center">Tu cuenta se guarda de forma segura. Inicia sesión con tu matrícula y contraseña. Para usar el sistema necesitas conexión a internet.</p>
+              </div>
+            </div>
+          </div>
+        `;
+
+        document.getElementById('tabBtnLogin').addEventListener('click', () => {
+          uiState.authTab = 'login';
+          renderLoginView();
+        });
+        document.getElementById('tabBtnRegister').addEventListener('click', () => {
+          uiState.authTab = 'register';
+          renderLoginView();
+        });
+
+        const showAuthError = (message) => {
+          const err = document.getElementById('authErrBox');
+          err.textContent = message;
+          err.classList.remove('hidden');
+        };
+        const matriculaEmail = value => `${String(value).trim().toLowerCase().replace(/[^a-z0-9._-]/g, '')}@transuni.app`;
+
+        const loginForm = document.getElementById('loginForm');
+        if (loginForm) loginForm.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          if (!BACKEND_READY) return showAuthError('El sistema todavía no está conectado a Supabase. Configura supabase-config.js.');
+          const id = document.getElementById('loginId').value.trim();
+          const pass = document.getElementById('loginPass').value;
+          const email = id.includes('@') ? id.toLowerCase() : matriculaEmail(id);
+          const submit = loginForm.querySelector('button[type="submit"]');
+          submit.disabled = true; submit.textContent = 'Verificando...';
+          const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password: pass });
+          submit.disabled = false; submit.textContent = 'Entrar';
+          if (error) return showAuthError(error.message.includes('Invalid login credentials') ? 'Matrícula o contraseña incorrectas. Si no tienes cuenta, regístrate primero.' : error.message);
+          try {
+            await loadProfiles();
+            await loadRemoteState();
+            const profile = profilesCache.find(p => p.id === data.user.id);
+            if (!profile || !profile.activo) {
+              await supabaseClient.auth.signOut();
+              return showAuthError('Tu perfil no está activo. Contacta al administrador.');
+            }
+            state.currentUserId = profile.id;
+            navigateTo(profile.rol === 'admin' ? 'admin' : profile.rol === 'chofer' ? 'choferes' : 'bonao_manana', profile.id);
+          } catch (err) { showAuthError(err.message || 'No se pudo cargar tu perfil.'); }
+        });
+
+        const regForm = document.getElementById('registerForm');
+        if (regForm) regForm.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          if (!BACKEND_READY) return showAuthError('El sistema todavía no está conectado a Supabase. Configura supabase-config.js.');
+          const nombre = document.getElementById('regNombre').value.trim();
+          const matricula = document.getElementById('regMat').value.trim();
+          const password = document.getElementById('regPass').value;
+          if (!nombre || !matricula || password.length < 8) return showAuthError('Completa todos los campos. La contraseña debe tener al menos 8 caracteres.');
+          const submit = regForm.querySelector('button[type="submit"]');
+          submit.disabled = true; submit.textContent = 'Creando cuenta...';
+          const { data, error } = await supabaseClient.auth.signUp({
+            email: matriculaEmail(matricula), password,
+            options: { data: { nombre, matricula, universidad: 'UCATECI', telefono: '' } }
+          });
+          submit.disabled = false; submit.textContent = 'Crear Cuenta y Votar';
+          if (error) return showAuthError(error.message.includes('already registered') ? 'Esa matrícula ya tiene una cuenta. Inicia sesión.' : error.message);
+          if (!data.session) return showAuthError('La cuenta se creó. El administrador de Supabase debe desactivar la confirmación de correo (Authentication → Providers → Email → Confirm email) para permitir el acceso con matrícula.');
+          try {
+            await loadProfiles();
+            const profile = profilesCache.find(p => p.id === data.user.id);
+            if (!profile) throw new Error('La cuenta se creó, pero no apareció el perfil. Ejecuta el SQL de configuración de Supabase.');
+            state.currentUserId = profile.id;
+            navigateTo('bonao_manana', profile.id);
+          } catch (err) { showAuthError(err.message); }
+        });
+
+
+      }
+
+      // =====================================================================
+      // ENCUESTAS UCATECI (LA VEGA) → BONAO: se reinician cada día
+      // =====================================================================
+      const RETORNO_POLLS = [
+        { id: 'ret-am', h: 8, m: 0, abre: '8:00 AM', icon: '☀️',
+          saludo: 'Buenos días. Favor indicar su salida de hoy hacia Bonao',
+          nota: 'Recuerden votar para que tengan derecho a reclamar',
+          opciones: [
+            { id: 'o1', hora: '08:15 AM', chofer: 'Jorge' },
+            { id: 'o2', hora: '09:15 AM', chofer: 'Dilone' },
+            { id: 'o3', hora: '10:15 AM', chofer: 'Jorge' },
+            { id: 'o4', hora: '12:15 PM', chofer: 'Dilone' },
+          ] },
+        { id: 'ret-pm', h: 13, m: 45, abre: '1:45 PM', icon: '🌆',
+          saludo: 'Buenas tardes. Favor indicar sus horarios de salida desde La Vega hacia Bonao hoy',
+          nota: 'Recuerden cambiar o quitar su voto si salen antes, por favor 🙏',
+          opciones: [
+            { id: 'o1', hora: '02:15 PM', chofer: 'Dilone' },
+            { id: 'o2', hora: '04:15 PM', chofer: 'Jorge' },
+            { id: 'o3', hora: '05:15 PM', chofer: 'Dilone' },
+            { id: 'o4', hora: '06:15 PM', chofer: 'Jorge' },
+            { id: 'o5', hora: '07:30 PM', chofer: 'Dilone' },
+            { id: 'o6', hora: '08:15 PM', chofer: 'Jorge' },
+            { id: 'o7', hora: '09:15 PM / 10:00 PM', chofer: 'Dilone' },
+          ] },
+      ];
+
+      // Si cambió el día: borra votos viejos y deja todo listo para votar de nuevo
+      function ensureToday() {
+        const hoy = formatISODate(new Date());
+        if (state.retorno && state.retorno.fecha === hoy) return false;
+        state.retorno = { fecha: hoy, votos: [], forzar: {} };
+        // Conserva el historial; cada vista filtra por la fecha activa.
+        if (state.config) state.config.dayOffset = 0;
+        saveState();
+        return true;
+      }
+
+      function pollNaturalOpen(p) {
+        const n = new Date();
+        return n.getHours() * 60 + n.getMinutes() >= p.h * 60 + p.m;
+      }
+      function pollIsOpen(p) {
+        return pollNaturalOpen(p) || !!state.retorno.forzar[p.id];
+      }
+
+      function retornoPollHtml(p, user, isAdm, fecha) {
+        const votos = state.retorno.votos.filter((v) => v.pollId === p.id);
+        const mine = votos.find((v) => v.usuarioId === user.id);
+        const open = pollIsOpen(p);
+        return `
+          <section class="bg-white rounded-3xl shadow-md border border-slate-200 overflow-hidden">
+            <div class="px-6 py-4 bg-[#002855] text-white flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div class="text-xs font-bold text-sky-300 uppercase tracking-wider">${p.icon} Encuesta • UCATECI → Bonao • Abre ${p.abre}</div>
+                <h2 class="text-base sm:text-lg font-extrabold leading-snug">${escapeHtml(p.saludo)}</h2>
+                <div class="text-xs text-blue-200 mt-0.5">Hoy ${escapeHtml(fecha)}</div>
+              </div>
+              <span class="px-3 py-1 rounded-full text-xs font-extrabold ${open ? 'bg-emerald-400/20 text-emerald-300' : 'bg-amber-400/20 text-amber-300'}">${open ? '● Abierta' : '🔒 Abre a las ' + p.abre}</span>
+            </div>
+            ${!open ? `<div class="px-6 py-3 bg-amber-50 text-amber-800 text-xs font-semibold border-b border-amber-200">Esta encuesta se desbloquea hoy a las ${p.abre} para que todos voten.${isAdm ? ` <button type="button" data-ret-force="${p.id}" class="ml-2 underline font-bold cursor-pointer">Desbloquear ahora (prueba)</button>` : ''}</div>` : ''}
+            <div class="divide-y divide-slate-100">
+              ${p.opciones.map((o) => {
+                const vs = votos.filter((v) => v.opcionId === o.id);
+                const pct = votos.length ? Math.round((vs.length / votos.length) * 100) : 0;
+                const isMine = mine && mine.opcionId === o.id;
+                return `
+                  <div class="px-4 sm:px-6 py-3.5 ${isMine ? 'bg-[#E6F1FA]/70' : ''}">
+                    <button type="button" data-ret-vote="${p.id}|${o.id}" ${open ? '' : 'disabled'} class="w-full flex items-start gap-3 text-left ${open ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}">
+                      <span class="mt-0.5 w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0 ${isMine ? 'border-[#0072CE] bg-[#0072CE]' : 'border-[#004B93] bg-white'}">${isMine ? '<span class="w-2.5 h-2.5 rounded-full bg-white"></span>' : ''}</span>
+                      <span class="flex-1 text-sm sm:text-base font-extrabold text-[#002855]">${escapeHtml(o.hora)} <span class="text-[#0072CE]">(Viajará ${escapeHtml(o.chofer)})</span></span>
+                      <span class="text-lg font-extrabold ${vs.length ? 'text-[#002855]' : 'text-slate-400'}">${vs.length}</span>
+                    </button>
+                    <div class="ml-9 mt-1.5 h-1.5 rounded-full bg-slate-200 overflow-hidden"><div class="h-full bg-emerald-500" style="width:${pct}%"></div></div>
+                    ${vs.length ? `<details class="ml-9 mt-1.5"><summary class="text-xs font-bold text-[#004B93] cursor-pointer">Ver votos</summary><ol class="mt-1 text-xs text-slate-600 space-y-0.5">${[...vs].reverse().map((v) => `<li>${escapeHtml(v.nombre)} <span class="text-slate-400">• ${escapeHtml(v.hora)}</span></li>`).join('')}</ol></details>` : ''}
+                  </div>`;
+              }).join('')}
+              <div class="px-6 py-4 text-sm font-bold text-[#002855]">${escapeHtml(p.nota)}</div>
+            </div>
+          </section>`;
+      }
+
+      function renderRetornoView() {
+        ensureToday();
+        const mount = document.getElementById('appMount');
+        const user = getCurrentUser();
+        const isAdm = user.rol === 'admin';
+        const n = new Date();
+        const dias = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+        const fecha = `${dias[n.getDay()]} ${String(n.getDate()).padStart(2, '0')}/${String(n.getMonth() + 1).padStart(2, '0')}/${n.getFullYear()}`;
+        uiState.retSig = RETORNO_POLLS.map(pollIsOpen).join();
+
+        mount.innerHTML = `
+          <div class="space-y-6">
+            <div class="bg-gradient-to-r from-[#002855] via-[#004B93] to-[#0072CE] rounded-3xl p-6 sm:p-7 text-white shadow-xl border border-sky-400/30">
+              <div class="inline-flex px-3 py-1 rounded-full text-xs font-extrabold uppercase tracking-wider bg-white/15 text-sky-200 border border-white/20 mb-2">🕗 Se abren a las 8:00 AM y a la 1:45 PM • Se reinician cada día</div>
+              <h1 class="text-2xl sm:text-3xl font-extrabold tracking-tight">Hoy: UCATECI (La Vega) hacia Bonao</h1>
+              <p class="text-sm font-bold text-amber-300 mt-1.5">${escapeHtml(fecha.toUpperCase())}</p>
+            </div>
+            ${RETORNO_POLLS.map((p) => retornoPollHtml(p, user, isAdm, fecha)).join('')}
+          </div>`;
+
+        mount.querySelectorAll('[data-ret-force]').forEach((b) => {
+          b.addEventListener('click', () => {
+            state.retorno.forzar[b.getAttribute('data-ret-force')] = true;
+            saveState();
+            renderRetornoView();
+          });
+        });
+        mount.querySelectorAll('[data-ret-vote]').forEach((b) => {
+          b.addEventListener('click', () => {
+            const [pid, oid] = b.getAttribute('data-ret-vote').split('|');
+            const p = RETORNO_POLLS.find((x) => x.id === pid);
+            if (!p || !pollIsOpen(p)) return;
+            const vs = state.retorno.votos;
+            const idx = vs.findIndex((v) => v.pollId === pid && v.usuarioId === user.id);
+            if (idx >= 0 && vs[idx].opcionId === oid) {
+              vs.splice(idx, 1);
+              showToast('Voto quitado.', 'info');
+            } else {
+              if (idx >= 0) vs.splice(idx, 1);
+              vs.push({ usuarioId: user.id, nombre: user.nombre, matricula: user.matricula, pollId: pid, opcionId: oid, hora: new Date().toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' }) });
+              showToast('Voto registrado.', 'success');
+            }
+            saveState();
+            renderRetornoView();
+          });
+        });
+      }
+
+      // Desbloqueo automático a las 8:00 AM / 1:45 PM y reinicio al cambiar el día
+      setInterval(() => {
+        const rolled = ensureToday();
+        if (!getCurrentUser()) return;
+        const sig = RETORNO_POLLS.map(pollIsOpen).join();
+        if (rolled || (state.currentView === 'retorno' && sig !== uiState.retSig)) renderApp();
+      }, 15000);
+
+      // =====================================================================
+      // RENDER PRINCIPAL
+      // =====================================================================
+      function renderApp() {
+        ensureToday();
+        const me = getCurrentUser();
+        if (!me) state.currentView = 'login';
+        else if (state.currentView === 'login') state.currentView = me.rol === 'chofer' ? 'choferes' : me.rol === 'admin' ? 'admin' : 'bonao_manana';
+        else if (state.currentView === 'admin' && me.rol !== 'admin') state.currentView = 'bonao_manana';
+        else if (state.currentView === 'choferes' && !['admin','chofer'].includes(me.rol)) state.currentView = 'bonao_manana';
+        renderDemoBar();
+        renderNavbar();
+
+        switch (state.currentView) {
+          case 'login':
+            renderLoginView();
+            break;
+          case 'bonao_manana':
+            renderBonaoMananaView();
+            break;
+          case 'mi_reserva':
+            renderMiReservaView();
+            break;
+          case 'retorno':
+            renderRetornoView();
+            break;
+          case 'lista':
+            renderListaPublicaView();
+            break;
+          case 'admin':
+            renderAdminView();
+            break;
+          case 'choferes':
+            renderChoferesView();
+            break;
+          default:
+            renderBonaoMananaView();
+        }
+      }
+
+      initializeBackend();
+    })();
+  </script>
+</body>
+</html>
